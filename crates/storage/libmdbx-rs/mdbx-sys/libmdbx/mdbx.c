@@ -17209,7 +17209,8 @@ __cold int mdbx_env_create(MDBX_env **penv) {
   }
 
 #if defined(__linux__) || defined(__gnu_linux__)
-  if (unlikely(linux_kernel_version < 0x04000000)) {
+  // FIXME(dknopik)
+  if (false && unlikely(linux_kernel_version < 0x04000000)) {
     /* 2022-09-01: Прошло уже больше двух после окончания какой-либо поддержки
      * самого "долгоиграющего" ядра 3.16.85 ветки 3.x */
     ERROR("too old linux kernel %u.%u.%u.%u, the >= 4.0.0 is required",
@@ -35207,7 +35208,8 @@ __cold MDBX_INTERNAL_FUNC int osal_lck_init(MDBX_env *env,
   if (rc)
     goto bailout;
 
-#if MDBX_LOCKING == MDBX_LOCKING_POSIX2008
+// FIXME(dknopik)
+#if false && MDBX_LOCKING == MDBX_LOCKING_POSIX2008
 #if defined(PTHREAD_MUTEX_ROBUST) || defined(pthread_mutexattr_setrobust)
   rc = pthread_mutexattr_setrobust(&ma, PTHREAD_MUTEX_ROBUST);
 #elif defined(PTHREAD_MUTEX_ROBUST_NP) ||                                      \
@@ -35222,7 +35224,8 @@ __cold MDBX_INTERNAL_FUNC int osal_lck_init(MDBX_env *env,
     goto bailout;
 #endif /* MDBX_LOCKING == MDBX_LOCKING_POSIX2008 */
 
-#if defined(_POSIX_THREAD_PRIO_INHERIT) && _POSIX_THREAD_PRIO_INHERIT >= 0 &&  \
+// FIXME(dknopik)
+#if false && defined(_POSIX_THREAD_PRIO_INHERIT) && _POSIX_THREAD_PRIO_INHERIT >= 0 &&  \
     !defined(MDBX_SAFE4QEMU)
   rc = pthread_mutexattr_setprotocol(&ma, PTHREAD_PRIO_INHERIT);
   if (rc == ENOTSUP)
