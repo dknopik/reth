@@ -9,6 +9,7 @@ Usage: reth p2p [OPTIONS] <COMMAND>
 Commands:
   header  Download block header
   body    Download block body
+  rlpx    RLPx commands
   help    Print this message or the help of the given subcommand(s)
 
 Options:
@@ -152,6 +153,13 @@ Networking:
 
       --max-inbound-peers <MAX_INBOUND_PEERS>
           Maximum number of inbound requests. default: 30
+
+      --max-seen-tx-history <MAX_SEEN_TX_HISTORY>
+          Max number of seen transactions to remember per peer.
+
+          Default is 320 transaction hashes.
+
+          [default: 320]
 
       --pooled-tx-response-soft-limit <BYTES>
           Experimental, for usage in research. Sets the max accumulated byte size of transactions

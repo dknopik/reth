@@ -12,12 +12,11 @@ use std::{fmt, sync::Arc};
 use alloy_primitives::U256;
 use derive_more::Deref;
 use reth_evm::ConfigureEvm;
-use reth_network::NetworkHandle;
 use reth_network_api::NetworkInfo;
 use reth_node_api::{BuilderProvider, FullNodeComponents, FullNodeTypes};
 use reth_provider::{
     BlockIdReader, BlockNumReader, BlockReaderIdExt, ChainSpecProvider, HeaderProvider,
-    StateProviderFactory,
+    StageCheckpointReader, StateProviderFactory,
 };
 use reth_rpc::eth::{core::EthApiInner, DevSigner};
 use reth_rpc_eth_api::{
@@ -40,7 +39,7 @@ use crate::OpEthApiError;
 pub type EthApiNodeBackend<N> = EthApiInner<
     <N as FullNodeTypes>::Provider,
     <N as FullNodeComponents>::Pool,
-    NetworkHandle,
+    <N as FullNodeComponents>::Network,
     <N as FullNodeComponents>::Evm,
 >;
 
@@ -49,7 +48,7 @@ pub type EthApiBuilderCtx<N> = reth_rpc_eth_types::EthApiBuilderCtx<
     <N as FullNodeTypes>::Provider,
     <N as FullNodeComponents>::Pool,
     <N as FullNodeComponents>::Evm,
-    NetworkHandle,
+    <N as FullNodeComponents>::Network,
     TaskExecutor,
     <N as FullNodeTypes>::Provider,
 >;
@@ -109,7 +108,7 @@ where
     N: FullNodeComponents,
 {
     #[inline]
-    fn provider(&self) -> impl ChainSpecProvider + BlockNumReader {
+    fn provider(&self) -> impl ChainSpecProvider + BlockNumReader + StageCheckpointReader {
         self.inner.provider()
     }
 
