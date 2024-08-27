@@ -6,7 +6,7 @@ use std::{
     path::Path,
     time::Duration,
 };
-
+use rand::{thread_rng, Rng};
 use reth_net_banlist::BanList;
 use reth_network_peers::{NodeRecord, TrustedPeer};
 use tracing::info;
@@ -60,8 +60,9 @@ impl PeerBackoffDurations {
     ///
     /// The Backoff duration is capped by the configured maximum backoff duration.
     pub fn backoff_until(&self, kind: BackoffKind, backoff_counter: u8) -> std::time::Instant {
-        let backoff_time = self.backoff(kind);
-        let backoff_time = backoff_time + backoff_time * backoff_counter as u32;
+        let backoff_base_time = self.backoff(kind);
+        let backoff_time = backoff_base_time + backoff_base_time * backoff_counter as u32;
+        let backoff_time = thread_rng().gen_range(backoff_base_time..=backoff_time);
         let now = std::time::Instant::now();
         now + backoff_time.min(self.max)
     }

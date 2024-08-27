@@ -7636,6 +7636,7 @@ name = "reth-network-types"
 version = "1.0.5"
 dependencies = [
  "humantime-serde",
+ "rand 0.8.5",
  "reth-ethereum-forks",
  "reth-net-banlist",
  "reth-network-p2p",
