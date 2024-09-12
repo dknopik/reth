@@ -199,14 +199,14 @@ impl BlobTransaction {
         // Now we need to decode the inner 4844 transaction and its signature:
         //
         // `[chain_id, nonce, max_priority_fee_per_gas, ..., y_parity, r, s]`
-        let inner_header = Header::decode(data)?;
+        /*let inner_header = Header::decode(data)?;
         if !inner_header.list {
             return Err(RlpError::Custom(
                 "PooledTransactions inner blob tx must be encoded as a list",
             ))
         }
 
-        let inner_remaining_len = data.len();
+        let inner_remaining_len = data.len();*/
 
         // inner transaction
         let transaction = TxEip4844::decode(data)?;
@@ -215,10 +215,10 @@ impl BlobTransaction {
         let signature = Signature::decode(data)?;
 
         // the inner header only decodes the transaction and signature, so we check the length here
-        let inner_consumed = inner_remaining_len - data.len();
+        /*let inner_consumed = inner_remaining_len - data.len();
         if inner_consumed != inner_header.payload_length {
             return Err(RlpError::UnexpectedLength)
-        }
+        }*/
 
         // All that's left are the blobs, commitments, and proofs
         let sidecar = BlobTransactionSidecar::decode(data)?;
