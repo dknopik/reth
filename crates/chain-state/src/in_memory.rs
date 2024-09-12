@@ -40,6 +40,16 @@ pub(crate) struct InMemoryStateMetrics {
 ///
 /// This tracks blocks and their state that haven't been persisted to disk yet but are part of the
 /// canonical chain that can be traced back to a canonical block on disk.
+///
+/// # Locking behavior on state updates
+///
+/// All update calls must be atomic, meaning that they must acquire all locks at once, before
+/// modifying the state. This is to ensure that the internal state is always consistent.
+/// Update functions ensure that the numbers write lock is always acquired first, because lookup by
+/// numbers first read the numbers map and then the blocks map.
+/// By acquiring the numbers lock first, we ensure that read-only lookups don't deadlock updates.
+/// This holds, because only lookup by number functions need to acquire the numbers lock first to
+/// get the block hash.
 #[derive(Debug, Default)]
 pub(crate) struct InMemoryState {
     /// All canonical blocks that are not on disk yet.
@@ -92,27 +102,25 @@ impl InMemoryState {
 
     /// Returns the state for a given block number.
     pub(crate) fn state_by_number(&self, number: u64) -> Option<Arc<BlockState>> {
-        self.numbers.read().get(&number).and_then(|hash| self.blocks.read().get(hash).cloned())
+        let hash = self.hash_by_number(number)?;
+        self.state_by_hash(hash)
     }
 
     /// Returns the hash for a specific block number
     pub(crate) fn hash_by_number(&self, number: u64) -> Option<B256> {
-        self.numbers.read().get(&number).cloned()
+        self.numbers.read().get(&number).copied()
     }
 
     /// Returns the current chain head state.
     pub(crate) fn head_state(&self) -> Option<Arc<BlockState>> {
-        self.numbers
-            .read()
-            .iter()
-            .max_by_key(|(&number, _)| number)
-            .and_then(|(_, hash)| self.blocks.read().get(hash).cloned())
+        let hash = *self.numbers.read().last_key_value()?.1;
+        self.state_by_hash(hash)
     }
 
     /// Returns the pending state corresponding to the current head plus one,
     /// from the payload received in newPayload that does not have a FCU yet.
-    pub(crate) fn pending_state(&self) -> Option<Arc<BlockState>> {
-        self.pending.borrow().as_ref().map(|state| Arc::new(BlockState::new(state.block.clone())))
+    pub(crate) fn pending_state(&self) -> Option<BlockState> {
+        self.pending.borrow().clone()
     }
 
     #[cfg(test)]
@@ -138,10 +146,11 @@ impl CanonicalInMemoryStateInner {
     /// Clears all entries in the in memory state.
     fn clear(&self) {
         {
-            let mut blocks = self.in_memory_state.blocks.write();
+            // acquire locks, starting with the numbers lock
             let mut numbers = self.in_memory_state.numbers.write();
-            blocks.clear();
+            let mut blocks = self.in_memory_state.blocks.write();
             numbers.clear();
+            blocks.clear();
             self.in_memory_state.pending.send_modify(|p| {
                 p.take();
             });
@@ -159,8 +168,8 @@ pub struct CanonicalInMemoryState {
 }
 
 impl CanonicalInMemoryState {
-    /// Create a new in memory state with the given blocks, numbers, pending state and finalized
-    /// header if it exists.
+    /// Create a new in-memory state with the given blocks, numbers, pending state, and optional
+    /// finalized header.
     pub fn new(
         blocks: HashMap<B256, Arc<BlockState>>,
         numbers: BTreeMap<u64, B256>,
@@ -168,22 +177,20 @@ impl CanonicalInMemoryState {
         finalized: Option<SealedHeader>,
     ) -> Self {
         let in_memory_state = InMemoryState::new(blocks, numbers, pending);
-        let head_state = in_memory_state.head_state();
-        let header = match head_state {
-            Some(state) => state.block().block().header.clone(),
-            None => SealedHeader::default(),
-        };
+        let header = in_memory_state
+            .head_state()
+            .map_or_else(SealedHeader::default, |state| state.block().block().header.clone());
         let chain_info_tracker = ChainInfoTracker::new(header, finalized);
-        let (canon_state_notification_sender, _canon_state_notification_receiver) =
+        let (canon_state_notification_sender, _) =
             broadcast::channel(CANON_STATE_NOTIFICATION_CHANNEL_SIZE);
 
-        let inner = CanonicalInMemoryStateInner {
-            chain_info_tracker,
-            in_memory_state,
-            canon_state_notification_sender,
-        };
-
-        Self { inner: Arc::new(inner) }
+        Self {
+            inner: Arc::new(CanonicalInMemoryStateInner {
+                chain_info_tracker,
+                in_memory_state,
+                canon_state_notification_sender,
+            }),
+        }
     }
 
     /// Create an empty state.
@@ -196,7 +203,7 @@ impl CanonicalInMemoryState {
     pub fn with_head(head: SealedHeader, finalized: Option<SealedHeader>) -> Self {
         let chain_info_tracker = ChainInfoTracker::new(head, finalized);
         let in_memory_state = InMemoryState::default();
-        let (canon_state_notification_sender, _canon_state_notification_receiver) =
+        let (canon_state_notification_sender, _) =
             broadcast::channel(CANON_STATE_NOTIFICATION_CHANNEL_SIZE);
         let inner = CanonicalInMemoryStateInner {
             chain_info_tracker,
@@ -241,7 +248,7 @@ impl CanonicalInMemoryState {
         I: IntoIterator<Item = ExecutedBlock>,
     {
         {
-            // acquire all locks
+            // acquire locks, starting with the numbers lock
             let mut numbers = self.inner.in_memory_state.numbers.write();
             let mut blocks = self.inner.in_memory_state.blocks.write();
 
@@ -290,10 +297,24 @@ impl CanonicalInMemoryState {
     ///
     /// This will update the links between blocks and remove all blocks that are [..
     /// `persisted_height`].
-    pub fn remove_persisted_blocks(&self, persisted_height: u64) {
+    pub fn remove_persisted_blocks(&self, persisted_num_hash: BlockNumHash) {
+        // if the persisted hash is not in the canonical in memory state, do nothing, because it
+        // means canonical blocks were not actually persisted.
+        //
+        // This can happen if the persistence task takes a long time, while a reorg is happening.
         {
-            let mut blocks = self.inner.in_memory_state.blocks.write();
+            if self.inner.in_memory_state.blocks.read().get(&persisted_num_hash.hash).is_none() {
+                // do nothing
+                return
+            }
+        }
+
+        {
+            // acquire locks, starting with the numbers lock
             let mut numbers = self.inner.in_memory_state.numbers.write();
+            let mut blocks = self.inner.in_memory_state.blocks.write();
+
+            let BlockNumHash { number: persisted_height, hash: _ } = persisted_num_hash;
 
             // clear all numbers
             numbers.clear();
@@ -349,7 +370,7 @@ impl CanonicalInMemoryState {
     }
 
     /// Returns the in memory pending state.
-    pub fn pending_state(&self) -> Option<Arc<BlockState>> {
+    pub fn pending_state(&self) -> Option<BlockState> {
         self.inner.in_memory_state.pending_state()
     }
 
@@ -465,6 +486,16 @@ impl CanonicalInMemoryState {
         self.inner.canon_state_notification_sender.subscribe()
     }
 
+    /// Subscribe to new safe block events.
+    pub fn subscribe_safe_block(&self) -> watch::Receiver<Option<SealedHeader>> {
+        self.inner.chain_info_tracker.subscribe_safe_block()
+    }
+
+    /// Subscribe to new finalized block events.
+    pub fn subscribe_finalized_block(&self) -> watch::Receiver<Option<SealedHeader>> {
+        self.inner.chain_info_tracker.subscribe_finalized_block()
+    }
+
     /// Attempts to send a new [`CanonStateNotification`] to all active Receiver handles.
     pub fn notify_canon_state(&self, event: CanonStateNotification) {
         self.inner.canon_state_notification_sender.send(event).ok();
@@ -485,7 +516,7 @@ impl CanonicalInMemoryState {
             Vec::new()
         };
 
-        MemoryOverlayStateProvider::new(in_memory, historical)
+        MemoryOverlayStateProvider::new(historical, in_memory)
     }
 
     /// Returns an iterator over all canonical blocks in the in-memory state, from newest to oldest.
@@ -522,7 +553,7 @@ impl CanonicalInMemoryState {
         &self,
         tx_hash: TxHash,
     ) -> Option<(TransactionSigned, TransactionMeta)> {
-        for (block_number, block_state) in self.canonical_chain().enumerate() {
+        for block_state in self.canonical_chain() {
             if let Some((index, tx)) = block_state
                 .block()
                 .block()
@@ -535,7 +566,7 @@ impl CanonicalInMemoryState {
                     tx_hash,
                     index: index as u64,
                     block_hash: block_state.hash(),
-                    block_number: block_number as u64,
+                    block_number: block_state.block().block.number,
                     base_fee: block_state.block().block().header.base_fee_per_gas,
                     timestamp: block_state.block().block.timestamp,
                     excess_blob_gas: block_state.block().block.excess_blob_gas,
@@ -559,12 +590,12 @@ pub struct BlockState {
 
 #[allow(dead_code)]
 impl BlockState {
-    /// `BlockState` constructor.
+    /// [`BlockState`] constructor.
     pub const fn new(block: ExecutedBlock) -> Self {
         Self { block, parent: None }
     }
 
-    /// `BlockState` constructor with parent.
+    /// [`BlockState`] constructor with parent.
     pub fn with_parent(block: ExecutedBlock, parent: Option<Self>) -> Self {
         Self { block, parent: parent.map(Box::new) }
     }
@@ -649,7 +680,7 @@ impl BlockState {
         chain
     }
 
-    /// Appends the parent chain of this `BlockState` to the given vector.
+    /// Appends the parent chain of this [`BlockState`] to the given vector.
     pub fn append_parent_chain<'a>(&'a self, chain: &mut Vec<&'a Self>) {
         chain.extend(self.parent_state_chain());
     }
@@ -806,6 +837,7 @@ mod tests {
     };
     use reth_storage_api::{
         AccountReader, BlockHashReader, StateProofProvider, StateProvider, StateRootProvider,
+        StorageRootProvider,
     };
     use reth_trie::{prefix_set::TriePrefixSetsMut, AccountProof, HashedStorage};
 
@@ -877,11 +909,11 @@ mod tests {
     }
 
     impl StateRootProvider for MockStateProvider {
-        fn hashed_state_root(&self, _hashed_state: HashedPostState) -> ProviderResult<B256> {
+        fn state_root(&self, _hashed_state: HashedPostState) -> ProviderResult<B256> {
             Ok(B256::random())
         }
 
-        fn hashed_state_root_from_nodes(
+        fn state_root_from_nodes(
             &self,
             _nodes: TrieUpdates,
             _post_state: HashedPostState,
@@ -890,14 +922,14 @@ mod tests {
             Ok(B256::random())
         }
 
-        fn hashed_state_root_with_updates(
+        fn state_root_with_updates(
             &self,
             _hashed_state: HashedPostState,
         ) -> ProviderResult<(B256, TrieUpdates)> {
             Ok((B256::random(), TrieUpdates::default()))
         }
 
-        fn hashed_state_root_from_nodes_with_updates(
+        fn state_root_from_nodes_with_updates(
             &self,
             _nodes: TrieUpdates,
             _post_state: HashedPostState,
@@ -905,8 +937,10 @@ mod tests {
         ) -> ProviderResult<(B256, TrieUpdates)> {
             Ok((B256::random(), TrieUpdates::default()))
         }
+    }
 
-        fn hashed_storage_root(
+    impl StorageRootProvider for MockStateProvider {
+        fn storage_root(
             &self,
             _address: Address,
             _hashed_storage: HashedStorage,
@@ -916,7 +950,7 @@ mod tests {
     }
 
     impl StateProofProvider for MockStateProvider {
-        fn hashed_proof(
+        fn proof(
             &self,
             _hashed_state: HashedPostState,
             _address: Address,
@@ -1097,6 +1131,58 @@ mod tests {
         assert_eq!(state.state_by_number(0).unwrap().block().block().hash(), block2.block().hash());
 
         assert_eq!(state.inner.in_memory_state.block_count(), 1);
+    }
+
+    #[test]
+    fn test_in_memory_state_set_pending_block() {
+        let state = CanonicalInMemoryState::empty();
+        let mut test_block_builder = TestBlockBuilder::default();
+
+        // First random block
+        let block1 = test_block_builder.get_executed_block_with_number(0, B256::random());
+
+        // Second block with parent hash of the first block
+        let block2 = test_block_builder.get_executed_block_with_number(1, block1.block().hash());
+
+        // Commit the two blocks
+        let chain = NewCanonicalChain::Commit { new: vec![block1.clone(), block2.clone()] };
+        state.update_chain(chain);
+
+        // Assert that the pending state is None before setting it
+        assert!(state.pending_state().is_none());
+
+        // Set the pending block
+        state.set_pending_block(block2.clone());
+
+        // Check the pending state
+        assert_eq!(
+            state.pending_state().unwrap(),
+            BlockState::with_parent(block2.clone(), Some(BlockState::new(block1)))
+        );
+
+        // Check the pending block
+        assert_eq!(state.pending_block().unwrap(), block2.block().clone());
+
+        // Check the pending block number and hash
+        assert_eq!(
+            state.pending_block_num_hash().unwrap(),
+            BlockNumHash { number: 1, hash: block2.block().hash() }
+        );
+
+        // Check the pending header
+        assert_eq!(state.pending_header().unwrap(), block2.block().header.header().clone());
+
+        // Check the pending sealed header
+        assert_eq!(state.pending_sealed_header().unwrap(), block2.block().header.clone());
+
+        // Check the pending block with senders
+        assert_eq!(
+            state.pending_block_with_senders().unwrap(),
+            block2.block().clone().seal_with_senders().unwrap()
+        );
+
+        // Check the pending block and receipts
+        assert_eq!(state.pending_block_and_receipts().unwrap(), (block2.block().clone(), vec![]));
     }
 
     #[test]

@@ -78,14 +78,17 @@ use crate::{
         PoolTransaction, PropagatedTransactions, TransactionOrigin,
     },
     validate::{TransactionValidationOutcome, ValidPoolTransaction},
-    CanonicalStateUpdate, ChangedAccount, PoolConfig, TransactionOrdering, TransactionValidator,
+    CanonicalStateUpdate, PoolConfig, TransactionOrdering, TransactionValidator,
 };
+use alloy_primitives::{Address, TxHash, B256};
 use best::BestTransactions;
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 use reth_eth_wire_types::HandleMempoolData;
+use reth_execution_types::ChangedAccount;
+
 use reth_primitives::{
-    Address, BlobTransaction, BlobTransactionSidecar, IntoRecoveredTransaction,
-    PooledTransactionsElement, TransactionSigned, TxHash, B256,
+    BlobTransaction, BlobTransactionSidecar, IntoRecoveredTransaction, PooledTransactionsElement,
+    TransactionSigned,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -732,6 +735,14 @@ where
         origin: TransactionOrigin,
     ) -> Vec<Arc<ValidPoolTransaction<T::Transaction>>> {
         self.get_pool_data().all().transactions_iter().filter(|tx| tx.origin == origin).collect()
+    }
+
+    /// Returns all pending transactions filted by [`TransactionOrigin`]
+    pub(crate) fn get_pending_transactions_by_origin(
+        &self,
+        origin: TransactionOrigin,
+    ) -> Vec<Arc<ValidPoolTransaction<T::Transaction>>> {
+        self.get_pool_data().pending_transactions_iter().filter(|tx| tx.origin == origin).collect()
     }
 
     /// Returns all the transactions belonging to the hashes.

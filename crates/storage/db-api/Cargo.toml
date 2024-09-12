@@ -47,25 +47,15 @@ rand.workspace = true
 
 test-fuzz.workspace = true
 
-pprof = { workspace = true, features = [
-    "flamegraph",
-    "frame-pointer",
-    "criterion",
-] }
-criterion.workspace = true
-iai-callgrind.workspace = true
-
 arbitrary = { workspace = true, features = ["derive"] }
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
-
-
-assert_matches.workspace = true
 
 [features]
 test-utils = ["arbitrary"]
 arbitrary = [
     "reth-primitives/arbitrary",
+    "reth-db-models/arbitrary",
     "dep:arbitrary",
     "dep:proptest",
 ]

@@ -12,10 +12,11 @@
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
+use std::sync::Arc;
+
 use reth_chainspec::{ChainSpec, Head};
 use reth_evm::{ConfigureEvm, ConfigureEvmEnv};
 use reth_primitives::{transaction::FillTxEnv, Address, Header, TransactionSigned, U256};
-use reth_revm::{Database, EvmBuilder};
 use revm_primitives::{AnalysisKind, Bytes, CfgEnvWithHandlerCfg, Env, TxEnv, TxKind};
 
 #[cfg(not(feature = "std"))]
@@ -33,20 +34,33 @@ pub mod dao_fork;
 pub mod eip6110;
 
 /// Ethereum-related EVM configuration.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct EthEvmConfig;
+pub struct EthEvmConfig {
+    chain_spec: Arc<ChainSpec>,
+}
+
+impl EthEvmConfig {
+    /// Creates a new Ethereum EVM configuration with the given chain spec.
+    pub const fn new(chain_spec: Arc<ChainSpec>) -> Self {
+        Self { chain_spec }
+    }
+
+    /// Returns the chain spec associated with this configuration.
+    pub fn chain_spec(&self) -> &ChainSpec {
+        &self.chain_spec
+    }
+}
 
 impl ConfigureEvmEnv for EthEvmConfig {
     fn fill_cfg_env(
         &self,
         cfg_env: &mut CfgEnvWithHandlerCfg,
-        chain_spec: &ChainSpec,
         header: &Header,
         total_difficulty: U256,
     ) {
         let spec_id = config::revm_spec(
-            chain_spec,
+            self.chain_spec(),
             &Head {
                 number: header.number,
                 timestamp: header.timestamp,
@@ -56,7 +70,7 @@ impl ConfigureEvmEnv for EthEvmConfig {
             },
         );
 
-        cfg_env.chain_id = chain_spec.chain().id();
+        cfg_env.chain_id = self.chain_spec.chain().id();
         cfg_env.perf_analyse_created_bytecodes = AnalysisKind::Analyse;
 
         cfg_env.handler_cfg.spec_id = spec_id;
@@ -110,20 +124,13 @@ impl ConfigureEvmEnv for EthEvmConfig {
 impl ConfigureEvm for EthEvmConfig {
     type DefaultExternalContext<'a> = ();
 
-    fn evm<DB: Database>(
-        &self,
-        db: DB,
-    ) -> reth_revm::Evm<'_, Self::DefaultExternalContext<'_>, DB> {
-        EvmBuilder::default().with_db(db).build()
-    }
-
     fn default_external_context<'a>(&self) -> Self::DefaultExternalContext<'a> {}
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reth_chainspec::{Chain, ChainSpec};
+    use reth_chainspec::{Chain, ChainSpec, MAINNET};
     use reth_evm::execute::ProviderError;
     use reth_primitives::{
         revm_primitives::{BlockEnv, CfgEnv, SpecId},
@@ -163,10 +170,9 @@ mod tests {
 
         // Use the `EthEvmConfig` to fill the `cfg_env` and `block_env` based on the ChainSpec,
         // Header, and total difficulty
-        EthEvmConfig::default().fill_cfg_and_block_env(
+        EthEvmConfig::new(Arc::new(chain_spec.clone())).fill_cfg_and_block_env(
             &mut cfg_env,
             &mut block_env,
-            &chain_spec,
             &header,
             total_difficulty,
         );
@@ -177,9 +183,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::needless_update)]
     fn test_evm_configure() {
         // Create a default `EthEvmConfig`
-        let evm_config = EthEvmConfig::default();
+        let evm_config = EthEvmConfig::new(MAINNET.clone());
 
         // Initialize an empty database wrapped in CacheDB
         let db = CacheDB::<EmptyDBTyped<ProviderError>>::default();
@@ -210,13 +217,14 @@ mod tests {
         // Ensure that the logs database is empty
         assert!(evm.context.evm.inner.db.logs.is_empty());
 
-        // Ensure that there are no valid authorizations in the EVM context
-        assert!(evm.context.evm.inner.valid_authorizations.is_empty());
+        // No Optimism
+        assert_eq!(evm.handler.cfg, HandlerCfg { spec_id: SpecId::LATEST, ..Default::default() });
     }
 
     #[test]
+    #[allow(clippy::needless_update)]
     fn test_evm_with_env_default_spec() {
-        let evm_config = EthEvmConfig::default();
+        let evm_config = EthEvmConfig::new(MAINNET.clone());
 
         let db = CacheDB::<EmptyDBTyped<ProviderError>>::default();
 
@@ -229,11 +237,15 @@ mod tests {
 
         // Default spec ID
         assert_eq!(evm.handler.spec_id(), SpecId::LATEST);
+
+        // No Optimism
+        assert_eq!(evm.handler.cfg, HandlerCfg { spec_id: SpecId::LATEST, ..Default::default() });
     }
 
     #[test]
+    #[allow(clippy::needless_update)]
     fn test_evm_with_env_custom_cfg() {
-        let evm_config = EthEvmConfig::default();
+        let evm_config = EthEvmConfig::new(MAINNET.clone());
 
         let db = CacheDB::<EmptyDBTyped<ProviderError>>::default();
 
@@ -256,11 +268,15 @@ mod tests {
 
         // Default spec ID
         assert_eq!(evm.handler.spec_id(), SpecId::LATEST);
+
+        // No Optimism
+        assert_eq!(evm.handler.cfg, HandlerCfg { spec_id: SpecId::LATEST, ..Default::default() });
     }
 
     #[test]
+    #[allow(clippy::needless_update)]
     fn test_evm_with_env_custom_block_and_tx() {
-        let evm_config = EthEvmConfig::default();
+        let evm_config = EthEvmConfig::new(MAINNET.clone());
 
         let db = CacheDB::<EmptyDBTyped<ProviderError>>::default();
 
@@ -286,12 +302,15 @@ mod tests {
 
         // Default spec ID
         assert_eq!(evm.handler.spec_id(), SpecId::LATEST);
+
+        // No Optimism
+        assert_eq!(evm.handler.cfg, HandlerCfg { spec_id: SpecId::LATEST, ..Default::default() });
     }
 
     #[test]
     #[allow(clippy::needless_update)]
     fn test_evm_with_spec_id() {
-        let evm_config = EthEvmConfig::default();
+        let evm_config = EthEvmConfig::new(MAINNET.clone());
 
         let db = CacheDB::<EmptyDBTyped<ProviderError>>::default();
 
@@ -303,11 +322,18 @@ mod tests {
 
         // Check that the spec ID is setup properly
         assert_eq!(evm.handler.spec_id(), SpecId::CONSTANTINOPLE);
+
+        // No Optimism
+        assert_eq!(
+            evm.handler.cfg,
+            HandlerCfg { spec_id: SpecId::CONSTANTINOPLE, ..Default::default() }
+        );
     }
 
     #[test]
+    #[allow(clippy::needless_update)]
     fn test_evm_with_inspector() {
-        let evm_config = EthEvmConfig::default();
+        let evm_config = EthEvmConfig::new(MAINNET.clone());
 
         let db = CacheDB::<EmptyDBTyped<ProviderError>>::default();
 
@@ -342,13 +368,14 @@ mod tests {
         // Ensure that the logs database is empty
         assert!(evm.context.evm.inner.db.logs.is_empty());
 
-        // Ensure that there are no valid authorizations in the EVM context
-        assert!(evm.context.evm.inner.valid_authorizations.is_empty());
+        // No Optimism
+        assert_eq!(evm.handler.cfg, HandlerCfg { spec_id: SpecId::LATEST, ..Default::default() });
     }
 
     #[test]
+    #[allow(clippy::needless_update)]
     fn test_evm_with_env_and_default_inspector() {
-        let evm_config = EthEvmConfig::default();
+        let evm_config = EthEvmConfig::new(MAINNET.clone());
         let db = CacheDB::<EmptyDBTyped<ProviderError>>::default();
 
         let env_with_handler = EnvWithHandlerCfg::default();
@@ -360,11 +387,15 @@ mod tests {
         assert_eq!(evm.context.evm.env, env_with_handler.env);
         assert_eq!(evm.context.external, NoOpInspector);
         assert_eq!(evm.handler.spec_id(), SpecId::LATEST);
+
+        // No Optimism
+        assert_eq!(evm.handler.cfg, HandlerCfg { spec_id: SpecId::LATEST, ..Default::default() });
     }
 
     #[test]
+    #[allow(clippy::needless_update)]
     fn test_evm_with_env_inspector_and_custom_cfg() {
-        let evm_config = EthEvmConfig::default();
+        let evm_config = EthEvmConfig::new(MAINNET.clone());
         let db = CacheDB::<EmptyDBTyped<ProviderError>>::default();
 
         let cfg = CfgEnv::default().with_chain_id(111);
@@ -381,11 +412,15 @@ mod tests {
         assert_eq!(evm.context.evm.env.cfg, cfg);
         assert_eq!(evm.context.external, NoOpInspector);
         assert_eq!(evm.handler.spec_id(), SpecId::LATEST);
+
+        // No Optimism
+        assert_eq!(evm.handler.cfg, HandlerCfg { spec_id: SpecId::LATEST, ..Default::default() });
     }
 
     #[test]
+    #[allow(clippy::needless_update)]
     fn test_evm_with_env_inspector_and_custom_block_tx() {
-        let evm_config = EthEvmConfig::default();
+        let evm_config = EthEvmConfig::new(MAINNET.clone());
         let db = CacheDB::<EmptyDBTyped<ProviderError>>::default();
 
         // Create custom block and tx environment
@@ -409,12 +444,15 @@ mod tests {
         assert_eq!(evm.context.evm.env.tx, env_with_handler.env.tx);
         assert_eq!(evm.context.external, NoOpInspector);
         assert_eq!(evm.handler.spec_id(), SpecId::LATEST);
+
+        // No Optimism
+        assert_eq!(evm.handler.cfg, HandlerCfg { spec_id: SpecId::LATEST, ..Default::default() });
     }
 
     #[test]
     #[allow(clippy::needless_update)]
     fn test_evm_with_env_inspector_and_spec_id() {
-        let evm_config = EthEvmConfig::default();
+        let evm_config = EthEvmConfig::new(MAINNET.clone());
         let db = CacheDB::<EmptyDBTyped<ProviderError>>::default();
 
         let handler_cfg = HandlerCfg { spec_id: SpecId::CONSTANTINOPLE, ..Default::default() };
@@ -427,5 +465,11 @@ mod tests {
         assert_eq!(evm.handler.spec_id(), SpecId::CONSTANTINOPLE);
         assert_eq!(evm.context.evm.env, env_with_handler.env);
         assert_eq!(evm.context.external, NoOpInspector);
+
+        // No Optimism
+        assert_eq!(
+            evm.handler.cfg,
+            HandlerCfg { spec_id: SpecId::CONSTANTINOPLE, ..Default::default() }
+        );
     }
 }
