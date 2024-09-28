@@ -577,3 +577,7 @@ similar-asserts = "1.5.0"
 tempfile = "3.8"
 test-fuzz = "5"
 tikv-jemallocator = { version = "0.5.0" }
+
+[patch.crates-io]
+revm-primitives = { git = 'https://github.com/dknopik/revm.git', branch = 'more-blobs' }
+alloy-eips = { git = 'https://github.com/dknopik/alloy.git', branch = 'more-blobs' }
